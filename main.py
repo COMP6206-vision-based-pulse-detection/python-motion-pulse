@@ -4,9 +4,8 @@
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import collections
 import itertools
-from scipy import interpolate, stats, signal
+from scipy import interpolate, signal
 import sklearn.decomposition
 
 
@@ -32,7 +31,7 @@ def make_face_rects(rect):
     )
 
 
-def get_moving_points(video_source="face2.mp4", do_draw=True, n_points=100):
+def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
     """ Open up a video source, find a face and track points on it.
     Every frame, yield the position delta for every point being tracked """
 
@@ -77,9 +76,10 @@ def get_moving_points(video_source="face2.mp4", do_draw=True, n_points=100):
     # An array of random colours, for drawing things!
     color = np.random.randint(0, 255, (100, 3))
 
+    go, capture = camera.read()
     while go:
+
         # Load next frame, convert to greyscale
-        go, capture = camera.read()
         new_img = cv2.cvtColor(capture, cv2.cv.CV_BGR2GRAY)
 
         # Use the Lucas-Kande optical flow thingy to detect the optical flow
@@ -110,9 +110,10 @@ def get_moving_points(video_source="face2.mp4", do_draw=True, n_points=100):
         old_img = new_img.copy()
         p0 = good_new.reshape(-1, 1, 2)
         # Continue round the loop!
+        go, capture = camera.read()
 
 
-def window(seq, n=2):
+def window(seq, n=2, skip=1):
     "Returns a sliding window (of width n) over data from the iterable"
     "   s -> (s0,s1,...s[n-1]), (s1,s2,...,sn), ...                   "
     # http://stackoverflow.com/questions/6822725/rolling-or-sliding-window-iterator-in-python
@@ -120,10 +121,13 @@ def window(seq, n=2):
     it = iter(seq)
     result = tuple(itertools.islice(it, n))
     if len(result) == n:
-        yield np.vstack(result)
+        yield result
+    i = 0
     for elem in it:
         result = result[1:] + (elem,)
-        yield np.vstack(result)
+        i = (i + 1) % skip
+        if i == 0:
+            yield result
 
 
 def interpolate_points(points, ratio=30.0 / 250.0, axis=0):
@@ -171,14 +175,11 @@ def find_periodicities(X, sample_freq=250.0):
     power = np.abs(np.fft.rfft(X, axis=0))**2
 
     # Build a list of the actual frequencies corresponding to each fft index, using numpy's rfftfreq
-    # n.b. This is where I'm having some trouble. We seem to get great results if we set d = 250/2
-    #      but the numpy documentation says that d should be the sampling frequency, which is 250.
-    #      Can anyone think of a reason that I'd need to use 125 instead of 250? If you can, we're
-    # getting perfect results! If not, our results are a factor of two out.
+    # n.b. This is where I'm having some trouble. I don't think I'm actually getting the right
+    # numbers out for the frequencies of these signals...
 
-    # real_frequencies = np.fft.rfftfreq(power.shape[0],  d=(1 / sample_freq))
     real_frequencies = np.fft.rfftfreq(
-        power.shape[0],  d=(1 / (sample_freq / 2.0)))
+        power.shape[0],  d=(1 / (sample_freq)))
 
     # Find the most powerful non-zero frequency in each signal
     max_indices = np.argmax(power[1:, :], axis=0) + 1
@@ -209,7 +210,16 @@ def find_periodicities(X, sample_freq=250.0):
     return np.array(frequencies), np.array(periodicities)
 
 
-def main():
+def getpeaks(x, winsize=151):
+    """ Return the indices of all points in a signal which are the largest poitns in
+    a window centered on themselves """
+    for i, win in enumerate(window(x, winsize, 1)):
+        ind = int(winsize / 2)
+        if np.argmax(win) == ind:
+            yield i + ind
+
+
+def main(incremental=False):
     """ Run the full algorithm on a video """
 
     # I did the windowing thing thinking that we'd be able to work on small windows at once
@@ -219,26 +229,28 @@ def main():
     # However, we could change things by using incremental PCA...
 
     # Work on the first N frames
-    N = 100
-
     butter_filter = make_filter()
+    signal = np.ndarray((0, 5))
+    if incremental:
+        N = 60
+        plot = False
+        pca = sklearn.decomposition.IncrementalPCA(n_components=5)
+    else:
+        N = 299
+        plot = True
+        pca = sklearn.decomposition.PCA(n_components=5)
 
     # Track some points in a video, changing over time
-    for points in window(get_moving_points("face2.mp4", do_draw=False, n_points=50), N):
+    for points in window(get_moving_points("face2-2.mp4", do_draw=False, n_points=50), N, N - 1):
+
         # Interpolate the points to 250 Hz
-        interpolated = interpolate_points(points).T
-        ax = plt.subplot(3, 1, 1)
-        ax.set_title("Interpolated point y-positions")
-        plt.plot(interpolated.T)
+        interpolated = interpolate_points(np.vstack(points)).T
 
         # Filter unstable movements
         # interpolated = filter_unstable_movements(interpolated.T).T
 
         # Filter with a butterworth filter
         filtered = butter_filter(interpolated).T
-        ax = plt.subplot(3, 1, 2)
-        ax.set_title("Filtered point y-positions")
-        plt.plot(filtered)
 
         # For fitting PCA, remove the time-frames with the top 25% percentile
         # largfest mvoements
@@ -246,34 +258,54 @@ def main():
         removed_abnormalities = filtered[norms > np.percentile(norms, 75)]
 
         # Perform PCA, getting the largest 5 components of movement
-        pca = sklearn.decomposition.PCA(n_components=5)
-        pca.fit(removed_abnormalities)
+        if incremental:
+            pca.partial_fit(removed_abnormalities)
+        else:
+            pca.fit(removed_abnormalities)
 
         # Project the tracked point movements on to the principle component vectors,
         # producing five waveforms for the different components of movement
         transformed = pca.transform(filtered)
 
+        signal = np.vstack((signal, transformed))
+
         # Find the periodicity of each signal
-        frequencies, periodicities = find_periodicities(transformed)
+        frequencies, periodicities = find_periodicities(signal)
 
-        # The frequency of the most periodic signal is supposedly the heart rate
+        # Find the indices of peaks in the signal
+        peaks = [list(getpeaks(signal.T[i])) for i in range(5)]
         most_periodic = np.argmax(periodicities)
-        ax = plt.subplot(3, 1, 3)
-        for i, p in enumerate(periodicities):
-            plt.plot(
-                transformed[:, i], linewidth=5 if i == most_periodic else 1)
-        ax.set_title("Components of motion")
 
+        # The frequency of the most periodic signal is supposedly the heart
+        # rate
         print "Periodicities: ", periodicities
         print "Most periodic: ", most_periodic
         print "Frequencies: ", frequencies
-        print "Heart rate: {} BPM".format(60.0 / frequencies[most_periodic])
+        print "Peak count BPMs: ", [len(p) for p in peaks]
+        print "Heart rate by FFT estimate: {} BPM".format(60.0 / frequencies[most_periodic])
+        countbpm = 10.0 / \
+            ((signal.shape[0] / (250.0 / 30.0)) / 30) * \
+            6 * len(peaks[most_periodic])
+        print signal.shape
+        print "Heart rate by peak estimate: {} BPM".format(countbpm)
 
-        # We're not doing real-time stuff, so just break off the loop here.
-        break
+    if plot:
+        ax = plt.subplot(3, 1, 1)
+        ax.set_title("Interpolated point y-positions")
+        plt.plot(interpolated.T)
+        ax = plt.subplot(3, 1, 2)
+        ax.set_title("Filtered point y-positions")
+        plt.plot(filtered)
+        ax = plt.subplot(3, 1, 3)
+        for i, p in enumerate(periodicities):
+            w = 5 if i == most_periodic else 1
+            plt.plot(transformed[:, i], linewidth=w)
+            plt.plot(peaks[i], [transformed.T[i][k] for k in peaks[i]], 'o')
+
+        ax.set_title("Components of motion")
 
 
 if __name__ == '__main__':
-    main()
+    main(False)
 
 plt.show()
