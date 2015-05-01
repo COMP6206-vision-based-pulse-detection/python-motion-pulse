@@ -8,7 +8,32 @@ import itertools
 from scipy import interpolate, signal
 import sklearn.decomposition
 
+import threading
+import Queue
 
+class VideoStreamProducer:
+    def __init__(self, frameQueue, maxFrameNumber, sourceType, fileName=None):
+        self.frameQueue = frameQueue
+        self.maxFrameNumber = maxFrameNumber
+        if sourceType=="Webcam":
+            self.sourceName=0
+        elif sourceType=="File":
+            if fileName is None:
+                raise Exception("Filename not specified")
+            else:
+                self.sourceName=fileName
+        else:
+            raise Exception("Source type not specified ('Webcam' or 'File')")
+    def ProduceFrames(self):
+        """This function blocks until maxFrameNumber frames are produced"""
+        camera = cv2.VideoCapture(self.sourceName)
+        for _ in range(self.maxFrameNumber):
+            success, frame = camera.read()
+            if not success:
+                break
+
+
+        
 def make_face_rects(rect):
     """ Given a rectangle (covering a face), return two rectangles.
         which cover the forehead and the area under the eyes """
