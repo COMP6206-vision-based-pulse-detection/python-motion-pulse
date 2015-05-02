@@ -3,9 +3,9 @@
 
 import cv2
 import time
-from memory_profiler import profile
+#from memory_profiler import profile
 
-@profile
+#@profile
 def func():
 	camera = cv2.VideoCapture("face2.mp4")
 

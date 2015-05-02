@@ -31,7 +31,7 @@ def make_face_rects(rect):
     )
 
 
-def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
+def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100,from_webcam=False,max_frameno=None):
     """ Open up a video source, find a face and track points on it.
     Every frame, yield the position delta for every point being tracked """
 
@@ -50,13 +50,15 @@ def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
                      criteria=critera)
 
     # Open up the video source. 0 = webcam
-    camera = cv2.VideoCapture(video_source)
+    camera = cv2.VideoCapture(0 if from_webcam else video_source)
 
     # Initialise a face detector using a premade XML file
     face_cascade = cv2.CascadeClassifier('faces.xml')
 
     # Capture the first frame, convert it to B&W
     go, capture = camera.read()
+    if not (max_frameno is None):
+        max_frameno-=1
     old_img = cv2.cvtColor(capture, cv2.cv.CV_BGR2GRAY)
 
     # Build a mask which covers a detected face, except for the eys
@@ -77,7 +79,9 @@ def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
     color = np.random.randint(0, 255, (100, 3))
 
     go, capture = camera.read()
-    while go:
+    while ((go) and ((max_frameno is None) or (max_frameno>0))):
+        if not (max_frameno is None):
+            max_frameno-=1
 
         # Load next frame, convert to greyscale
         new_img = cv2.cvtColor(capture, cv2.cv.CV_BGR2GRAY)
@@ -241,7 +245,7 @@ def main(incremental=False):
         pca = sklearn.decomposition.PCA(n_components=5)
 
     # Track some points in a video, changing over time
-    for points in window(get_moving_points("face2-2.mp4", do_draw=False, n_points=50), N, N - 1):
+    for points in window(get_moving_points("face2-2.mp4", do_draw=True, n_points=50,max_frameno=300,from_webcam = True), N, N - 1):
 
         # Interpolate the points to 250 Hz
         interpolated = interpolate_points(np.vstack(points)).T
