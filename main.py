@@ -11,9 +11,10 @@ import sklearn.decomposition
 import threading
 import Queue
 
+
 class VideoStreamProducer:
-    def __init__(self, frameQueue, maxFrameNumber, sourceType, fileName=None):
-        self.frameQueue = frameQueue
+    def __init__(self, maxFrameNumber, sourceType, fileName=None):
+        self.frameQueue = Queue.Queue(maxFrameNumber)
         self.maxFrameNumber = maxFrameNumber
         if sourceType=="Webcam":
             self.sourceName=0
@@ -24,13 +25,33 @@ class VideoStreamProducer:
                 self.sourceName=fileName
         else:
             raise Exception("Source type not specified ('Webcam' or 'File')")
+    @property
+    def FrameQueue(self):
+        return self.frameQueue
     def ProduceFrames(self):
         """This function blocks until maxFrameNumber frames are produced"""
         camera = cv2.VideoCapture(self.sourceName)
         for _ in range(self.maxFrameNumber):
             success, frame = camera.read()
             if not success:
+                print "Video stream ended unexpectedly"
                 break
+            else:
+                self.frameQueue.put((frame, None))
+        self.frameQueue.join()
+
+class FrameProducer(threading.Thread):
+    def __init__(self,frameQueue):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.frameQueue = frameQueue
+    def Run(self):
+        self.ProcessFrames()
+    def ProcessFrames(self):
+        while True:
+            frame, period = self.frameQueue.get(block=True)
+
+
 
 
         
@@ -56,7 +77,7 @@ def make_face_rects(rect):
     )
 
 
-def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
+def get_moving_points(source_queue, do_draw=True, n_points=100):
     """ Open up a video source, find a face and track points on it.
     Every frame, yield the position delta for every point being tracked """
 
@@ -74,14 +95,11 @@ def get_moving_points(video_source="face2-2.mp4", do_draw=True, n_points=100):
                      maxLevel=2,
                      criteria=critera)
 
-    # Open up the video source. 0 = webcam
-    camera = cv2.VideoCapture(video_source)
-
     # Initialise a face detector using a premade XML file
     face_cascade = cv2.CascadeClassifier('faces.xml')
 
     # Capture the first frame, convert it to B&W
-    go, capture = camera.read()
+    frame = source.queue.get(block=True)[0]
     old_img = cv2.cvtColor(capture, cv2.cv.CV_BGR2GRAY)
 
     # Build a mask which covers a detected face, except for the eys
