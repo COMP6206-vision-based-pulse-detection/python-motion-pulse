@@ -50,7 +50,10 @@ def make_filter(order=5, low_freq=0.75, high_freq=5, sample_freq=250.0):
     low = low_freq / nyq
     high = high_freq / nyq
     b, a = signal.butter(order, [low, high], btype='bandpass')
-    return (lambda x: signal.lfilter(b, a, x), b, a)
+    func = lambda x: signal.lfilter(b, a, x)
+    func.b = b
+    func.a = a
+    return func
 
 
 def find_periodicities(X, sample_freq=250.0):

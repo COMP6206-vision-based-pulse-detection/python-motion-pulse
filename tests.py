@@ -28,7 +28,7 @@ class TestSignalFunctions(unittest.TestCase):
     def test_make_filter(self):
         """ Check that the bandpass filter function filters the correct signals.
         N.B graph must be checked by eye! """
-        filt, b, a = signals.make_filter(
+        filt = signals.make_filter(
             order=5, low_freq=0.75, high_freq=5, sample_freq=250.0)
         x, y = self.make_test_signal(250.0)
 
