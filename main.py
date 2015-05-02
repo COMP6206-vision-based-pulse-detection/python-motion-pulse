@@ -8,6 +8,7 @@ import itertools
 from scipy import interpolate, signal
 import sklearn.decomposition
 from signals import *
+from facetracking import *
 import threading
 import Queue
 
