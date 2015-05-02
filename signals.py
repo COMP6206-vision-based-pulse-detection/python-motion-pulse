@@ -68,7 +68,7 @@ def find_periodicities(X, sample_freq=250.0):
     # numbers out for the frequencies of these signals...
 
     real_frequencies = np.fft.rfftfreq(
-        power.shape[0],  d=(1 / (sample_freq)))
+        X.shape[0],  d=(1 / (sample_freq)))
 
     # Find the most powerful non-zero frequency in each signal
     max_indices = np.argmax(power[1:, :], axis=0) + 1
