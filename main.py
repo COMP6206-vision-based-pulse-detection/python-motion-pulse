@@ -41,7 +41,8 @@ class VideoStreamProducer:
         self.frameQueue.join()
 
 class FrameProcessor(threading.Thread):
-    def __init__(self,frameQueue,incrementalPCA,n_components,windowSize):
+    def __init__(self,frameQueue,incrementalPCA,n_components,windowSize,
+                 drawFaceTrack,n_trackPoints,windowSize,windowSkip):
         threading.Thread.__init__(self)
         self.daemon = True
         self.frameQueue = frameQueue
@@ -50,24 +51,22 @@ class FrameProcessor(threading.Thread):
             self.pca = sklearn.decomposition.IncrementalPCA(n_components=n_components)
         else:
             self.pca = sklearn.decomposition.PCA(n_components=n_components)
+        self.drawFaceTrack = drawFaceTrack
+        self.n_trackPoints = n_trackPoints
+        self.windowSize = windowSize
+        self.windowSkip = windowSkip
     def Run(self):
         self.ProcessFrames()
     def ProcessFrames(self):
-        #create a butterworth filter
-        butter_filter = make_filter()
-        #initialise a variable for the signal to go in
-        signal = np.ndarray((0, 5))
-        while True:
-            pass
-
-    @staticmethod
-    def get_moving_points(source_queue, do_draw=True, n_points=100):
-        """ Open up a video source, find a face and track points on it.
+        movingPoints = self.GetMovingPoints()
+        measureMovingPoints(movingPoints)
+    def GetMovingPoints(self):
+        """ Using the source, find a face and track points on it.
         Every frame, yield the position delta for every point being tracked """
 
         # Define parameters for ShiTomasi corner detection (we have no iea if
         # these are good)
-        feature_params = dict(maxCorners=n_points,
+        feature_params = dict(maxCorners=self.n_trackPoints,
                               qualityLevel=0.1,
                               minDistance=2,
                               blockSize=7)
@@ -83,10 +82,10 @@ class FrameProcessor(threading.Thread):
         face_cascade = cv2.CascadeClassifier('faces.xml')
 
         # Capture the first frame, convert it to B&W
-        frame = source_queue.get(block=True)[0]
+        frame = self.frameQueue.get(block=True)[0]
         old_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
         #say that we've finished processing the first frame
-        source_queue.task_done()
+        self.frameQueue.task_done()
 
         # Build a mask which covers a detected face, except for the eys
         mask = np.zeros_like(old_img)
@@ -107,7 +106,7 @@ class FrameProcessor(threading.Thread):
 
         while True:
             # Load next frame, convert to greyscale
-            frame,framePeriod = source_queue.get(block=True)
+            frame,framePeriod = self.frameQueue.get(block=True)
             new_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
 
             # Use the Lucas-Kande optical flow thingy to detect the optical flow
@@ -120,8 +119,8 @@ class FrameProcessor(threading.Thread):
             good_old = p0[status == 1]
             good_first = firstp[status == 1]
 
-            # Debugging code, draw the 'flow' if do_draw == True
-            if do_draw:
+            # Debugging code, draw the 'flow' if necessary
+            if self.drawFaceTrack:
                 for i, (new, old) in enumerate(zip(good_new, good_old)):
                     a, b = new.ravel()
                     c, d = old.ravel()
@@ -134,63 +133,65 @@ class FrameProcessor(threading.Thread):
             yield (good_new - good_first)[:, 1]
 
             #say that we've finished with the frame
-            source_queue.task_done()
+            self.frameQueue.task_done()
 
             # Set the 'previous' image to be the current one
             # and the previous point positions to be the current ones
             old_img = new_img.copy()
             p0 = good_new.reshape(-1, 1, 2)
+    def MeasureMovingPoints(self,points):
+        #create a butterworth filter
+        butter_filter = make_filter()
+        #initialise a variable for the signal to go in
+        signalStack = np.ndarray((0, 5))
+        # Track some points in a video, changing over time
+        for points in window(points, self.windowSize, self.windowSkip):
 
-########################################################################################
-    # Track some points in a video, changing over time
-    for points in window(get_moving_points("face2-2.mp4", do_draw=False, n_points=50), N, N - 1):
+            # Interpolate the points to 250 Hz
+            interpolated = interpolate_points(np.vstack(points)).T
 
-        # Interpolate the points to 250 Hz
-        interpolated = interpolate_points(np.vstack(points)).T
+            # Filter unstable movements
+            # interpolated = filter_unstable_movements(interpolated.T).T
 
-        # Filter unstable movements
-        # interpolated = filter_unstable_movements(interpolated.T).T
+            # Filter with a butterworth filter
+            filtered = butter_filter(interpolated).T
 
-        # Filter with a butterworth filter
-        filtered = butter_filter(interpolated).T
+            # For fitting PCA, remove the time-frames with the top 25% percentile
+            # largfest mvoements
+            norms = np.linalg.norm(filtered, 2, axis=1)
+            removed_abnormalities = filtered[norms > np.percentile(norms, 75)]
 
-        # For fitting PCA, remove the time-frames with the top 25% percentile
-        # largfest mvoements
-        norms = np.linalg.norm(filtered, 2, axis=1)
-        removed_abnormalities = filtered[norms > np.percentile(norms, 75)]
+            # Perform PCA, getting the largest 5 components of movement
+            if incremental:
+                pca.partial_fit(removed_abnormalities)
+            else:
+                pca.fit(removed_abnormalities)
 
-        # Perform PCA, getting the largest 5 components of movement
-        if incremental:
-            pca.partial_fit(removed_abnormalities)
-        else:
-            pca.fit(removed_abnormalities)
+            # Project the tracked point movements on to the principle component vectors,
+            # producing five waveforms for the different components of movement
+            transformed = pca.transform(filtered)
 
-        # Project the tracked point movements on to the principle component vectors,
-        # producing five waveforms for the different components of movement
-        transformed = pca.transform(filtered)
+            signalStack = np.vstack((signalStack, transformed))
 
-        signal = np.vstack((signal, transformed))
+            # Find the periodicity of each signal
+            frequencies, periodicities = find_periodicities(signalStack)
 
-        # Find the periodicity of each signal
-        frequencies, periodicities = find_periodicities(signal)
+            # Find the indices of peaks in the signal
+            peaks = [list(getpeaks(signalStack.T[i])) for i in range(5)]
+            most_periodic = np.argmax(periodicities)
 
-        # Find the indices of peaks in the signal
-        peaks = [list(getpeaks(signal.T[i])) for i in range(5)]
-        most_periodic = np.argmax(periodicities)
-
-        # The frequency of the most periodic signal is supposedly the heart
-        # rate
-        print "Periodicities: ", periodicities
-        print "Most periodic: ", most_periodic
-        print "Frequencies: ", frequencies
-        print "Peak count BPMs: ", [len(p) for p in peaks]
-        print "Heart rate by FFT estimate: {} BPM".format(60.0 / frequencies[most_periodic])
-        countbpm = 10.0 / \
-            ((signal.shape[0] / (250.0 / 30.0)) / 30) * \
-            6 * len(peaks[most_periodic])
-        print signal.shape
-        print "Heart rate by peak estimate: {} BPM".format(countbpm)
-########################################################################################
+            # The frequency of the most periodic signal is supposedly the heart
+            # rate
+            print "Periodicities: ", periodicities
+            print "Most periodic: ", most_periodic
+            print "Frequencies: ", frequencies
+            print "Peak count BPMs: ", [len(p) for p in peaks]
+            print "Heart rate by FFT estimate: {} BPM".format(60.0 / frequencies[most_periodic])
+            countbpm = 10.0 / \
+                ((signalStack.shape[0] / (250.0 / 30.0)) / 30) * \
+                6 * len(peaks[most_periodic])
+            print signalStack.shape
+            print "Heart rate by peak estimate: {} BPM".format(countbpm)
 
 def make_face_rects(rect):
     """ Given a rectangle (covering a face), return two rectangles.
