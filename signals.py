@@ -2,6 +2,7 @@ import numpy as np
 import itertools
 from scipy import interpolate, signal
 
+
 def window(seq, n=2, skip=1):
     "Returns a sliding window (of width n) over data from the iterable"
     "   s -> (s0,s1,...s[n-1]), (s1,s2,...,sn), ...                   "
@@ -49,7 +50,7 @@ def make_filter(order=5, low_freq=0.75, high_freq=5, sample_freq=250.0):
     low = low_freq / nyq
     high = high_freq / nyq
     b, a = signal.butter(order, [low, high], btype='bandpass')
-    return lambda x: signal.lfilter(b, a, x)
+    return (lambda x: signal.lfilter(b, a, x), b, a)
 
 
 def find_periodicities(X, sample_freq=250.0):
@@ -82,13 +83,13 @@ def find_periodicities(X, sample_freq=250.0):
     i = 0
 
     # Loop over each signal
-    for i1, i2 in zip(max_indices, harmonic_indices):
+    for fundamental, harmonic in zip(max_indices, harmonic_indices):
         # Get the real frequency highest power component
-        frequencies.append(real_frequencies[i1])
+        frequencies.append(real_frequencies[fundamental])
 
         # Get the total power of the highest power component and its
         # first harmonic, as a percentage of the total signal power
-        period_power = np.sum(power[[i1, i2], i])
+        period_power = np.sum(power[[fundamental, harmonic], i])
         total_power = np.sum(power[:, i])
         percentage = period_power / total_power
 
