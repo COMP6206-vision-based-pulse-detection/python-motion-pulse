@@ -11,24 +11,29 @@ from signals import *
 from facetracking import *
 import threading
 import Queue
+import time
 
 
 class VideoStreamProducer:
-    def __init__(self, maxFrameNumber, sourceType, fileName=None,printSteps=False):
+    def __init__(self, maxFrameNumber, sourceType, fileName=None,
+                 maxFPS=None, printSteps=False):
         self.frameQueue = Queue.Queue(maxFrameNumber)
         self.maxFrameNumber = maxFrameNumber
-        if sourceType=="Webcam":
+        self.sourceType = sourceType
+        if self.sourceType=="Webcam":
             self.sourceName=0
-        elif sourceType=="File":
+        elif self.sourceType=="File":
             if fileName is None:
                 raise Exception("Filename not specified")
             else:
                 self.sourceName=fileName
         else:
             raise Exception("Source type not specified ('Webcam' or 'File')")
+        self.maxFPS = maxFPS
         self.printSteps = printSteps
         if self.printSteps:
-            print "VideoStreamProducer created. Source = "+sourceType+("("+fileName+")") if sourceType=="File" else ""
+            print "VideoStreamProducer created. Source = "+self.sourceType+\
+                  (" '"+self.sourceName+"'") if self.sourceType=="File" else ""
     @property
     def FrameQueue(self):
         return self.frameQueue
@@ -37,13 +42,36 @@ class VideoStreamProducer:
         if self.printSteps:
             print "VideoStreamProducer opening video source"
         camera = cv2.VideoCapture(self.sourceName)
-        for _ in range(self.maxFrameNumber):
+        #if we are reading from a webcam, we need to calculate FPS manually,
+        #   and for that we need to measure time differences
+        if self.sourceType == "Webcam":
+            oldTime=time.time()
+        #go through all the frames we need to collect
+        for i in range(self.maxFrameNumber):
+            #see if there is a maximum frame period - if so, wait for that
+            #   long. The reason we do this before we read & put the first
+            #   frame is that it means the first FPS measurement is at least
+            #   aproximately right
+            if not (self.maxFPS is None):
+                time.sleep(1.0/self.maxFPS)
+            #read from the source
             success, frame = camera.read()
+            #if there was an error, break the loop
             if not success:
                 print "Video stream ended unexpectedly"
                 break
-            else:
-                self.frameQueue.put((frame, None))
+            #measure the fps
+            if self.sourceType=="Webcam":
+                currentTime = time.time()
+                fps = 1.0/(currentTime-oldTime)
+                oldTime=currentTime
+            elif self.sourceType=="File":
+                fps = camera.get(cv2.cv.CV_CAP_PROP_FPS)
+            #print if necessary
+            if self.printSteps:
+                print "Put frame "+str(i)+" into queue. FPS = "+str(fps)
+            #put the frame into the queue
+            self.frameQueue.put((frame, fps))
         if self.printSteps:
             print "VideoStreamProducer finished loading frames; getting ready to join threads"
         self.frameQueue.join()
@@ -207,27 +235,52 @@ class FrameProcessor(threading.Thread):
             print "Heart rate by peak estimate: {} BPM".format(countbpm)
 
 
-def main(incrementalPCA=False):
+def main():
     """ Run the full algorithm on a video """
 
-    # Work on the first N frames
-    if incrementalPCA:
-        N = 60
-        #plot = False
-    else:
-        N = 299
-        #plot = True
+    #Maximum number of frames to load from source
+    maxFrameNumber = 300
+    #What the video source is (either "File" or "Webcam")
+    videoSourceType = "File"
+    #Filename of video (if taken from a file)
+    videoFileName = "face2-2.mp4"
 
+    #How long to wait between loading frames (probably None if loading from a
+    #   file, and probably ~30 if using a webcam)
+    maxFPS = None
 
-    #create a video stream producer
-    vstream = VideoStreamProducer(300,"File","face2-2.mp4",True)
+    #Whether to use an incremental PCA or not
+    incrementalPCA = False
+    #Number of components for the PCA
+    n_components = 5
+    #Number of points on the face to track
+    n_trackPoints = 50
+    #Window size (probably ~60 for an incremental PCA, or (maxFrameNumber-1) for
+    #   a video file)
+    windowSize = 299
+    #How far apart subsequent windows should be
+    windowSkip = windowSize-1
+    
+    #Whether to show the video and tracking points as it's being processed
+    drawFaceTrack = True
+    #Whether to print out what's being done at each step
+    printSteps = True
 
-    #create a video stream processor
-    frameproc = FrameProcessor(vstream.FrameQueue,incrementalPCA,5,True,50,N,N-1,True)
-    #set it going in its own thread (it will wait until it has something to process)
+    #Create a video stream producer
+    vstream = VideoStreamProducer(maxFrameNumber,videoSourceType,videoFileName,
+                                  maxFPS,printSteps)
+
+    #Create a video stream processor
+    frameproc = FrameProcessor(vstream.FrameQueue,incrementalPCA,n_components,
+                               drawFaceTrack,n_trackPoints,windowSize,
+                               windowSkip,printSteps)
+
+    #Set the video processor going in its own thread (it will wait until it has
+    #   something to process)
     frameproc.start()
 
-    #Set the frame producer going (this will block until the frame processor has finished)
+    #Set the frame producer going (this will block until the frame processor
+    #   has finished)
     vstream.ProduceFrames()
 
     """This will need fixing to work with the new threaded structure"""
@@ -249,5 +302,5 @@ def main(incrementalPCA=False):
 
 
 if __name__ == '__main__':
-    main(False)
+    main()
 
