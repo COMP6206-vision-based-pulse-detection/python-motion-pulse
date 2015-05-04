@@ -14,7 +14,7 @@ import Queue
 
 
 class VideoStreamProducer:
-    def __init__(self, maxFrameNumber, sourceType, fileName=None):
+    def __init__(self, maxFrameNumber, sourceType, fileName=None,printSteps=False):
         self.frameQueue = Queue.Queue(maxFrameNumber)
         self.maxFrameNumber = maxFrameNumber
         if sourceType=="Webcam":
@@ -26,11 +26,16 @@ class VideoStreamProducer:
                 self.sourceName=fileName
         else:
             raise Exception("Source type not specified ('Webcam' or 'File')")
+        self.printSteps = printSteps
+        if self.printSteps:
+            print "VideoStreamProducer created. Source = "+sourceType+("("+fileName+")") if sourceType=="File" else ""
     @property
     def FrameQueue(self):
         return self.frameQueue
     def ProduceFrames(self):
         """This function blocks until maxFrameNumber frames are produced"""
+        if self.printSteps:
+            print "VideoStreamProducer opening video source"
         camera = cv2.VideoCapture(self.sourceName)
         for _ in range(self.maxFrameNumber):
             success, frame = camera.read()
@@ -39,16 +44,18 @@ class VideoStreamProducer:
                 break
             else:
                 self.frameQueue.put((frame, None))
+        if self.printSteps:
+            print "VideoStreamProducer finished loading frames; getting ready to join threads"
         self.frameQueue.join()
 
 class FrameProcessor(threading.Thread):
-    def __init__(self,frameQueue,incrementalPCA,n_components,windowSize,
-                 drawFaceTrack,n_trackPoints,windowSize,windowSkip):
+    def __init__(self,frameQueue,incrementalPCA,n_components,drawFaceTrack,
+                 n_trackPoints,windowSize,windowSkip,printSteps=False):
         threading.Thread.__init__(self)
         self.daemon = True
         self.frameQueue = frameQueue
-        self.windowSize = windowSize
-        if incrementalPCA:
+        self.incrementalPCA = incrementalPCA
+        if self.incrementalPCA:
             self.pca = sklearn.decomposition.IncrementalPCA(n_components=n_components)
         else:
             self.pca = sklearn.decomposition.PCA(n_components=n_components)
@@ -56,11 +63,16 @@ class FrameProcessor(threading.Thread):
         self.n_trackPoints = n_trackPoints
         self.windowSize = windowSize
         self.windowSkip = windowSkip
-    def Run(self):
+        self.printSteps = printSteps
+        if self.printSteps:
+            print "FrameProcessor created"
+    def run(self):
         self.ProcessFrames()
     def ProcessFrames(self):
+        if self.printSteps:
+            print "FrameProcessor running"
         movingPoints = self.GetMovingPoints()
-        measureMovingPoints(movingPoints)
+        self.MeasureMovingPoints(movingPoints)
     def GetMovingPoints(self):
         """ Using the source, find a face and track points on it.
         Every frame, yield the position delta for every point being tracked """
@@ -163,14 +175,14 @@ class FrameProcessor(threading.Thread):
             removed_abnormalities = filtered[norms > np.percentile(norms, 75)]
 
             # Perform PCA, getting the largest 5 components of movement
-            if incremental:
-                pca.partial_fit(removed_abnormalities)
+            if self.incrementalPCA:
+                self.pca.partial_fit(removed_abnormalities)
             else:
-                pca.fit(removed_abnormalities)
+                self.pca.fit(removed_abnormalities)
 
             # Project the tracked point movements on to the principle component vectors,
             # producing five waveforms for the different components of movement
-            transformed = pca.transform(filtered)
+            transformed = self.pca.transform(filtered)
 
             signalStack = np.vstack((signalStack, transformed))
 
@@ -208,10 +220,10 @@ def main(incrementalPCA=False):
 
 
     #create a video stream producer
-    vstream = VideoStreamProducer(300,"File","face2-2.mp4")
+    vstream = VideoStreamProducer(300,"File","face2-2.mp4",True)
 
     #create a video stream processor
-    frameproc = FrameProcessor(vstream.FrameQueue,incrementalPCA,5,N)
+    frameproc = FrameProcessor(vstream.FrameQueue,incrementalPCA,5,True,50,N,N-1,True)
     #set it going in its own thread (it will wait until it has something to process)
     frameproc.start()
 
@@ -238,6 +250,4 @@ def main(incrementalPCA=False):
 
 if __name__ == '__main__':
     main(False)
-
-plt.show()
 
