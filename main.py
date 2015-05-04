@@ -147,7 +147,7 @@ class FrameProcessor(threading.Thread):
 
         while True:
             # Load next frame, convert to greyscale
-            frame,framePeriod = self.frameQueue.get(block=True)
+            frame, fps = self.frameQueue.get(block=True)
             new_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
 
             # Use the Lucas-Kande optical flow thingy to detect the optical flow
