@@ -123,20 +123,28 @@ class FrameProcessor(threading.Thread):
         face_cascade = cv2.CascadeClassifier('faces.xml')
 
         # Capture the first frame, convert it to B&W
-        frame = self.frameQueue.get(block=True)[0]
-        old_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
-        #say that we've finished processing the first frame
-        self.frameQueue.task_done()
-
         # Build a mask which covers a detected face, except for the eys
-        mask = np.zeros_like(old_img)
-        faces = face_cascade.detectMultiScale(old_img, 1.3, 5)
+        faces = ()
+        print " *** Searching for a face... *** "
+        while len(faces) == 0:
+            frame = self.frameQueue.get(block=True)[0]
+            old_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
+            if self.drawFaceTrack:
+                cv2.imshow("Video", old_img)
+                cv2.waitKey(1)
+            faces = face_cascade.detectMultiScale(old_img, 1.3, 5)
+            self.frameQueue.task_done()
+            
+        print " *** Found face *** "
+        # Build a mask which covers a detected face, except for the eyes
         rects = make_face_rects(faces[0])
+        mask = np.zeros_like(old_img)
         for x, y, w, h in rects:
             # Fill in a rectangle area of the 'mask' array white
             cv2.rectangle(mask, (x, y), ((x + w), (y + h)),
                           thickness=-1,
                           color=(255, 255, 255))
+
 
         # Use a corner detector to find "good features to track" inside the mask
         # n.b. we're not sure if this is the right way of picking points to track
@@ -170,8 +178,8 @@ class FrameProcessor(threading.Thread):
                 cv2.imshow("Video", old_img)
                 cv2.waitKey(1)
 
-            # Yield the y-component of the point positions
-            yield (good_new - good_first)[:, 1]
+            # Yield the y-component of the point positions, and the fps
+            yield ((good_new - good_first)[:, 1], fps)
 
             #say that we've finished with the frame
             self.frameQueue.task_done()
@@ -180,16 +188,21 @@ class FrameProcessor(threading.Thread):
             # and the previous point positions to be the current ones
             old_img = new_img.copy()
             p0 = good_new.reshape(-1, 1, 2)
-    def MeasureMovingPoints(self,points):
+
+    def MeasureMovingPoints(self,iterator):
         #create a butterworth filter
         butter_filter = make_filter()
         #initialise a variable for the signal to go in
         signalStack = np.ndarray((0, 5))
         # Track some points in a video, changing over time
-        for points in window(points, self.windowSize, self.windowSkip):
+        for data in window(iterator, self.windowSize, self.windowSkip):
+
+            points = np.array([p[0] for p in data])
+            fps = np.mean([p[1] for p in data])
 
             # Interpolate the points to 250 Hz
-            interpolated = interpolate_points(np.vstack(points)).T
+
+            interpolated = interpolate_points(np.vstack(points), fps=fps).T
 
             # Filter unstable movements
             # interpolated = filter_unstable_movements(interpolated.T).T

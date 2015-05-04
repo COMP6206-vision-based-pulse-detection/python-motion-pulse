@@ -20,7 +20,7 @@ def window(seq, n=2, skip=1):
             yield result
 
 
-def interpolate_points(points, ratio=30.0 / 250.0, axis=0):
+def interpolate_points(points, fps=30.0, sample_freq = 250.0, axis=0):
     """ Given an matrix of waveforms, interpolate them along an axis
     such that the number of new is multiplied by (1/ratio) """
     # Define the old time space, i.e. the index of each point
@@ -29,7 +29,7 @@ def interpolate_points(points, ratio=30.0 / 250.0, axis=0):
     # Make an 'interpolation function' using scikit's interp1d
     f = interpolate.interp1d(indices, points, kind='cubic', axis=axis)
     # Define the new time axis,
-    xnew = np.arange(0, N - 1, ratio)
+    xnew = np.arange(0, N - 1, fps/sample_freq)
     return f(xnew)
 
 
