@@ -12,6 +12,7 @@ import facetracking
 import threading
 import Queue
 import time
+import pickle
 
 
 class VideoStreamProducer:
@@ -256,6 +257,18 @@ class FrameProcessor(threading.Thread):
             num_seconds = len(signalStack) / (sample_freq)
             countbpm = num_peaks * (60.0 / num_seconds)
             print "Heart rate by peak estimate: {} BPM".format(countbpm)
+
+            with open("all.pkl", "w") as f:
+                pickle.dump({
+                    'frequencies': frequencies, 
+                    'periodicities': periodicities,
+                    'points': points,
+                    'interpolated': interpolated,
+                    'filtered': filtered,
+                    'transformed': transformed,
+                    'peaks': peaks,
+                    'fftbpm': (60. /  frequencies[most_periodic])
+                }, f)
 
 
 def main():

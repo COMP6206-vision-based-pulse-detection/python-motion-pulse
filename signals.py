@@ -1,7 +1,8 @@
 import numpy as np
 import itertools
 from scipy import interpolate, signal
-
+import matplotlib.pyplot as plt
+import pickle
 
 def window(seq, n=2, skip=1):
     "Returns a sliding window (of width n) over data from the iterable"
@@ -73,6 +74,9 @@ def find_periodicities(X, sample_freq=250.0):
 
     real_frequencies = np.fft.rfftfreq(
         X.shape[0],  d=(1 / (sample_freq)))
+
+    with open("fft.pkl", "w") as f:
+        pickle.dump({'power': power, 'frequencies': real_frequencies}, f)
 
     # Find the most powerful non-zero frequency in each signal
     max_indices = np.argmax(power[1:, :], axis=0) + 1
