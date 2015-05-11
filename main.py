@@ -20,8 +20,15 @@ class VideoStreamProducer:
     def __init__(self, maxFrameNumber, sourceType, fileName=None,
                  maxFPS=None, printSteps=False):
         self.frameQueue = Queue.Queue(maxFrameNumber)
+        self.pointsQueue = Queue.Queue()
+        self.dataQueue = Queue.Queue()
+
         self.maxFrameNumber = maxFrameNumber
         self.sourceType = sourceType
+        self.drawFaceTrack = True
+        self.pointsToDraw = None
+        self.dataToDraw = None
+
         if self.sourceType == "Webcam":
             self.sourceName = 0
         elif self.sourceType == "File":
@@ -36,13 +43,44 @@ class VideoStreamProducer:
         if self.printSteps:
             filename = " '{}'".format(self.sourceName) if self.sourceType == "File" else ""
             print "VideoStreamProducer created. Source = {type}{name}".format(type=self.sourceType, name=filename)
-
+        self.pointColours = np.random.randint(0, 255, (100, 3))
     @property
     def FrameQueue(self):
         return self.frameQueue
 
+    def DrawFrame(self, frame):
+        canvas = frame.copy()
+
+        if self.pointsToDraw:
+            for i, (new, old) in enumerate(self.pointsToDraw):
+                a, b = new.ravel()
+                c, d = old.ravel()
+                cv2.line(canvas, (a, b), (c, d), self.pointColours[i].tolist(), 2)
+                cv2.circle(canvas, (a, b), 5, self.pointColours[i].tolist(), -1)
+        if self.dataToDraw is not None:
+
+            cv2.putText(canvas, "{} BPM".format(int(self.dataToDraw['bpm'])), (50, 200), cv2.FONT_HERSHEY_COMPLEX, 2, (0, 0, 255), 3)
+
+
+            sig = self.dataToDraw['signal'][:, self.dataToDraw['most_periodic']][-1500:]
+            #sig = sig * 20 + 300
+            sig = sig - np.mean(sig)
+            sig = sig / np.std(sig)
+            sig *= 50
+            sig += 400
+
+            signals.window(sig, 2, 1)
+            for i, points in enumerate(signals.window(sig, 2, 1)):
+                y0, y1 = points
+                cv2.line(canvas, (int(i/3), int(y0)), (int(i/3)+1, int(y1)), (100, 100, 255), 2)
+                
+
+        cv2.imshow("Video", canvas)
+        cv2.waitKey(1)
     def ProduceFrames(self):
         """This function blocks until maxFrameNumber frames are produced"""
+        
+
         if self.printSteps:
             print "VideoStreamProducer opening video source"
         camera = cv2.VideoCapture(self.sourceName)
@@ -51,12 +89,13 @@ class VideoStreamProducer:
         if self.sourceType == "Webcam":
             oldTime = time.time()
         # go through all the frames we need to collect
+
         for i in range(self.maxFrameNumber):
             # see if there is a maximum frame period - if so, wait for that
             #   long. The reason we do this before we read & put the first
             #   frame is that it means the first FPS measurement is at least
             #   aproximately right
-            if not (self.maxFPS is None):
+            if (self.maxFPS is not None):
                 time.sleep(1.0 / self.maxFPS)
             # read from the source
             success, frame = camera.read()
@@ -64,6 +103,23 @@ class VideoStreamProducer:
             if not success:
                 print "Video stream ended unexpectedly"
                 break
+
+            try:
+                self.pointsToDraw = self.pointsQueue.get(block=False)
+                self.pointsQueue.task_done()
+            except Queue.Empty:
+                pass
+            try:
+                self.dataToDraw = self.dataQueue.get(block=False)
+                self.dataQueue.task_done()
+            except Queue.Empty:
+                pass
+
+            if self.drawFaceTrack:
+                self.DrawFrame(frame)
+
+
+
             # measure the fps
             if self.sourceType == "Webcam":
                 currentTime = time.time()
@@ -83,21 +139,26 @@ class VideoStreamProducer:
 
 class FrameProcessor(threading.Thread):
 
-    def __init__(self, frameQueue, incrementalPCA, n_components, drawFaceTrack,
+    def __init__(self, frameQueue, pointsQueue, dataQueue, incrementalPCA, n_components, drawFaceTrack,
                  n_trackPoints, windowSize, windowSkip, printSteps=False):
         threading.Thread.__init__(self)
         self.daemon = True
         self.frameQueue = frameQueue
         self.incrementalPCA = incrementalPCA
+        self.pointsQueue = pointsQueue
+        self.dataQueue = dataQueue
         if self.incrementalPCA:
             self.pca = sklearn.decomposition.IncrementalPCA(n_components=n_components)
         else:
             self.pca = sklearn.decomposition.PCA(n_components=n_components)
+        self.n_components = n_components
         self.drawFaceTrack = drawFaceTrack
         self.n_trackPoints = n_trackPoints
         self.windowSize = windowSize
         self.windowSkip = windowSkip
         self.printSteps = printSteps
+        self.most_periodic = 1
+        self.bpm = 0
         if self.printSteps:
             print "FrameProcessor created"
 
@@ -116,10 +177,15 @@ class FrameProcessor(threading.Thread):
 
         # Define parameters for ShiTomasi corner detection (we have no iea if
         # these are good)
+        # feature_params = dict(maxCorners=self.n_trackPoints,
+        #                       qualityLevel=0.1,
+        #                       minDistance=2,
+        #                       blockSize=7)
+
         feature_params = dict(maxCorners=self.n_trackPoints,
-                              qualityLevel=0.1,
-                              minDistance=2,
-                              blockSize=7)
+                              qualityLevel=0.01,
+                              minDistance=0.01,
+                              blockSize=15)
 
         # Define parameters for Lucas-Kanade optical flow (we have no iea if these
         # are good either)
@@ -135,14 +201,16 @@ class FrameProcessor(threading.Thread):
         # Build a mask which covers a detected face, except for the eys
         faces = ()
         print " *** Searching for a face... *** "
+        old_img = None
+        i = 0
         while len(faces) == 0:
             frame = self.frameQueue.get(block=True)[0]
             old_img = cv2.cvtColor(frame, cv2.cv.CV_BGR2GRAY)
-            if self.drawFaceTrack:
-                cv2.imshow("Video", old_img)
-                cv2.waitKey(1)
-            faces = face_cascade.detectMultiScale(old_img, 1.3, 5)
+            if i == 0:
+                faces = face_cascade.detectMultiScale(old_img, 1.3, 5)
             self.frameQueue.task_done()
+            i += 1
+            i = i % 30
 
         print " *** Found face *** "
         # Build a mask which covers a detected face, except for the eyes
@@ -159,8 +227,6 @@ class FrameProcessor(threading.Thread):
         # track
         p0 = cv2.goodFeaturesToTrack(old_img, mask=mask, **feature_params)
         firstp = p0
-        # An array of random colours, for drawing things!
-        color = np.random.randint(0, 255, (100, 3))
 
         while True:
             # Load next frame, convert to greyscale
@@ -178,20 +244,15 @@ class FrameProcessor(threading.Thread):
             good_first = firstp[status == 1]
 
             # Debugging code, draw the 'flow' if necessary
-            if self.drawFaceTrack:
-                for i, (new, old) in enumerate(zip(good_new, good_old)):
-                    a, b = new.ravel()
-                    c, d = old.ravel()
-                    cv2.line(old_img, (a, b), (c, d), color[i].tolist(), 2)
-                    cv2.circle(old_img, (a, b), 5, color[i].tolist(), -1)
-                cv2.imshow("Video", old_img)
-                cv2.waitKey(1)
+            self.pointsQueue.put(zip(good_new, good_old))
 
             # Yield the y-component of the point positions, and the fps
             yield ((good_new - good_first)[:, 1], fps)
 
             # say that we've finished with the frame
             self.frameQueue.task_done()
+
+            self.dataQueue.put({'signal': self.signalStack, 'bpm': self.bpm, 'most_periodic': self.most_periodic})
 
             # Set the 'previous' image to be the current one
             # and the previous point positions to be the current ones
@@ -202,7 +263,7 @@ class FrameProcessor(threading.Thread):
         # create a butterworth filter
         butter_filter = signals.make_filter(sample_freq=250)
         # initialise a variable for the signal to go in
-        signalStack = np.ndarray((0, 5))
+        self.signalStack = np.ndarray((0, self.n_components))
         # Set frequency to interpolate to
         sample_freq = 250.0
         # Track some points in a video, changing over time
@@ -236,78 +297,97 @@ class FrameProcessor(threading.Thread):
             # producing five waveforms for the different components of movement
             transformed = self.pca.transform(filtered)
 
-            signalStack = np.vstack((signalStack, transformed))
+            self.signalStack = np.vstack((self.signalStack, transformed))
 
             # Find the periodicity of each signal
-            frequencies, periodicities = signals.find_periodicities(signalStack)
+            frequencies, periodicities = signals.find_periodicities(self.signalStack)
 
             # Find the indices of peaks in the signal
-            peaks = [list(signals.getpeaks(signalStack.T[i]))
+            peaks = [list(signals.getpeaks(self.signalStack.T[i]))
                      for i in range(5)]
             most_periodic = np.argmax(periodicities)
-
+            self.most_periodic = most_periodic
             # The frequency of the most periodic signal is supposedly the heart
             # rate
             print "Periodicities: ", periodicities
             print "Most periodic: ", most_periodic
             print "Frequencies: ", frequencies
             print "Peak count BPMs: ", [len(p) for p in peaks]
-            print "Heart rate by FFT estimate: {} BPM".format(60.0 / frequencies[most_periodic])
+            print "Heart rate by FFT estimate: {} BPM".format(60.0 * frequencies[most_periodic])
             num_peaks = len(peaks[most_periodic])
-            num_seconds = len(signalStack) / (sample_freq)
+            num_seconds = len(self.signalStack) / (sample_freq)
             countbpm = num_peaks * (60.0 / num_seconds)
             print "Heart rate by peak estimate: {} BPM".format(countbpm)
 
-            with open("all.pkl", "w") as f:
-                pickle.dump({
-                    'frequencies': frequencies, 
-                    'periodicities': periodicities,
-                    'points': points,
-                    'interpolated': interpolated,
-                    'filtered': filtered,
-                    'transformed': transformed,
-                    'peaks': peaks,
-                    'fftbpm': (60. /  frequencies[most_periodic])
-                }, f)
+            self.bpm = countbpm
+
+            if False:
+                with open("all.pkl", "w") as f:
+                    pickle.dump({
+                        'frequencies': frequencies, 
+                        'periodicities': periodicities,
+                        'points': points,
+                        'interpolated': interpolated,
+                        'filtered': filtered,
+                        'transformed': transformed,
+                        'stack': self.signalStack,
+                        'peaks': peaks,
+                        'fftbpm': (60.0 *  frequencies[most_periodic])
+                    }, f)
 
 
 def main():
     """ Run the full algorithm on a video """
 
-    # Maximum number of frames to load from source
-    maxFrameNumber = 300
-    # What the video source is (either "File" or "Webcam")
-    videoSourceType = "File"
-    # Filename of video (if taken from a file)
-    videoFileName = "face2-2.mp4"
+    file_params_vstream = dict(
+        maxFrameNumber = 300,
+        sourceType = "File",
+        fileName = "face2-2.mp4",
+        maxFPS = None,
+        printSteps = True
+    )
 
-    # How long to wait between loading frames (probably None if loading from a
-    #   file, and probably ~30 if using a webcam)
-    maxFPS = None
+    file_params_frameproc = dict(
+        n_components = 5,
+        n_trackPoints = 50,
+        windowSize = 30,
+        drawFaceTrack = False,
+        incrementalPCA = False
+    )
 
-    # Whether to use an incremental PCA or not
-    incrementalPCA = False
-    # Number of components for the PCA
-    n_components = 5
-    # Number of points on the face to track
-    n_trackPoints = 50
-    # Window size (probably ~60 for an incremental PCA, or (maxFrameNumber-1) for
-    #   a video file)
-    windowSize = 299
-    # How far apart subsequent windows should be
-    windowSkip = windowSize - 1
+    webcam_params_vstream = dict(
+        maxFrameNumber = 10000,
+        sourceType = "Webcam",
+        fileName = "",
+        maxFPS = None,
+        printSteps = True
+    )
+    webcam_params_frameproc = dict(
+        n_components = 5,
+        n_trackPoints = 50,
+        windowSize = 10,
+        drawFaceTrack = True,
+        printSteps = True,
+        incrementalPCA = False
+    )
 
-    # Whether to show the video and tracking points as it's being processed
-    drawFaceTrack = True
-    # Whether to print out what's being done at each step
-    printSteps = True
+    if True:
+        frameproc_params = webcam_params_frameproc
+        vstream_params = webcam_params_vstream
+    else:
+        frameproc_params = file_params_frameproc
+        vstream_params = file_params_vstream
+
+
+    
+    frameproc_params['windowSkip'] = frameproc_params['windowSize'] - 1
+
 
     # Create a video stream producer
-    vstream = VideoStreamProducer(maxFrameNumber, videoSourceType, videoFileName, maxFPS, printSteps)
+    vstream = VideoStreamProducer(**vstream_params)
 
     # Create a video stream processor
-    frameproc = FrameProcessor(vstream.FrameQueue, incrementalPCA, n_components,
-                               drawFaceTrack, n_trackPoints, windowSize, windowSkip, printSteps)
+    frameproc = FrameProcessor(vstream.FrameQueue, vstream.pointsQueue, vstream.dataQueue, **frameproc_params)
 
     # Set the video processor going in its own thread (it will wait until it has
     #   something to process)
@@ -317,21 +397,6 @@ def main():
     #   has finished)
     vstream.ProduceFrames()
 
-    """This will need fixing to work with the new threaded structure"""
-    # if plot:
-    #    ax = plt.subplot(3, 1, 1)
-    #    ax.set_title("Interpolated point y-positions")
-    #    plt.plot(interpolated.T)
-    #    ax = plt.subplot(3, 1, 2)
-    #    ax.set_title("Filtered point y-positions")
-    #    plt.plot(filtered)
-    #    ax = plt.subplot(3, 1, 3)
-    #    for i, p in enumerate(periodicities):
-    #        w = 5 if i == most_periodic else 1
-    #        plt.plot(transformed[:, i], linewidth=w)
-    #        plt.plot(peaks[i], [transformed.T[i][k] for k in peaks[i]], 'o')
-
-    #    ax.set_title("Components of motion")
 
 
 if __name__ == '__main__':
