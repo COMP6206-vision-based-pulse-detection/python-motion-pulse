@@ -1,13 +1,11 @@
 import numpy as np
 import itertools
 from scipy import interpolate, signal
-import matplotlib.pyplot as plt
-import pickle
 
 def window(seq, n=2, skip=1):
     "Returns a sliding window (of width n) over data from the iterable"
     "   s -> (s0,s1,...s[n-1]), (s1,s2,...,sn), ...                   "
-    # http://stackoverflow.com/questions/6822725/rolling-or-sliding-window-iterator-in-python
+    # Implimentation from: http://stackoverflow.com/questions/6822725/rolling-or-sliding-window-iterator-in-python
 
     it = iter(seq)
     result = tuple(itertools.islice(it, n))
@@ -57,6 +55,7 @@ def make_filter(order=5, low_freq=0.75, high_freq=5, sample_freq=250.0):
     return func
 
 
+
 def find_periodicities(X, sample_freq=250.0):
     """ Find the periodicity of each signal in a matrix(along axis 0),
     and the associated frequencies of the periods"""
@@ -64,22 +63,30 @@ def find_periodicities(X, sample_freq=250.0):
     # We're not sure if this is quite correct, but it's what the paper
     # seemed to imply...
     # This could also be made much neater, and optimised.
+    X = X - np.mean(X, axis=0)
+    sigs = []
+    for row in X.T:
+        sigs.append(row / np.std(row))
+        
+    X = np.array(sigs).T
+
 
     # Find the power spectrum of the signal (absolute fft squared)
     power = np.abs(np.fft.rfft(X, axis=0))**2
+
+    cutoff = 1
+    power = power[cutoff:, :]
 
     # Build a list of the actual frequencies corresponding to each fft index, using numpy's rfftfreq
     # n.b. This is where I'm having some trouble. I don't think I'm actually getting the right
     # numbers out for the frequencies of these signals...
 
     real_frequencies = np.fft.rfftfreq(
-        X.shape[0],  d=(1 / (sample_freq)))
-
-    with open("fft.pkl", "w") as f:
-        pickle.dump({'power': power, 'frequencies': real_frequencies}, f)
+        X.shape[0],  d=(1 / (sample_freq)))[cutoff:]
 
     # Find the most powerful non-zero frequency in each signal
-    max_indices = np.argmax(power[1:, :], axis=0) + 1
+    start = 0
+    max_indices = np.argmax(power[start:, :], axis=0) + start
 
     # The first haromic component of f = f*2
     harmonic_indices = max_indices * 2
